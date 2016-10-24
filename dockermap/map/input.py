@@ -10,13 +10,17 @@ from ..functional import lazy_type, uses_type_registry
 
 SharedVolume = namedtuple('SharedVolume', ('volume', 'readonly'))
 ContainerLink = namedtuple('ContainerLink', ('container', 'alias'))
-PortBinding = namedtuple('PortBinding', ('exposed_port', 'host_port', 'interface'))
-ExecCommand = namedtuple('ExecCommand', ('cmd', 'user'))
+PortBinding = namedtuple('PortBinding', ('exposed_port', 'host_port', 'interface', 'ipv6'))
+ExecCommand = namedtuple('ExecCommand', ('cmd', 'user', 'policy'))
 
+
+EXEC_POLICY_RESTART = 'restart'
+EXEC_POLICY_INITIAL = 'initial'
 
 CURRENT_DIR = '{0}{1}'.format(posixpath.curdir, posixpath.sep)
 
 
+@six.python_2_unicode_compatible
 class _NotSet(object):
     def __nonzero__(self):
         return False
@@ -25,11 +29,8 @@ class _NotSet(object):
     def __repr__(self):
         return "<Value not set>"
 
-    def __unicode__(self):
-        return "Not set"
-
     def __str__(self):
-        return self.__unicode__()
+        return "Not set"
 
 
 NotSet = _NotSet()
@@ -85,6 +86,8 @@ def get_list(value):
     """
     if value is None:
         return []
+    elif value is NotSet:
+        return NotSet
     elif isinstance(value, (list, tuple)):
         return list(value)
     elif isinstance(value, six.string_types + (lazy_type, )) or uses_type_registry(value):
@@ -224,24 +227,33 @@ def get_port_binding(value):
     if isinstance(value, PortBinding):
         return value
     elif isinstance(value, sub_types):  # Port only
-        return PortBinding(value, None, None)
+        return PortBinding(value, None, None, False)
     elif isinstance(value, (list, tuple)):  # Exposed port, host port, and possibly interface
-        if len(value) == 1 and isinstance(value[0], sub_types):
-            return PortBinding(value[0], None, None)
-        if len(value) == 2:
+        v_len = len(value)
+        if v_len == 1 and isinstance(value[0], sub_types):
+            return PortBinding(value[0], None, None, False)
+        if v_len == 2:
             ex_port, host_bind = value
             if isinstance(host_bind, sub_types + (lazy_type, )) or host_bind is None or uses_type_registry(host_bind):
                 # Port, host port
-                return PortBinding(ex_port, host_bind, None)
-            elif isinstance(host_bind, (list, tuple)) and len(host_bind) == 2:  # Port, (host port, interface)
-                host_port, interface = host_bind
-                return PortBinding(ex_port, host_port, interface)
+                return PortBinding(ex_port, host_bind, None, False)
+            elif isinstance(host_bind, (list, tuple)):
+                s_len = len(host_bind)
+                if s_len == 2:  # Port, (host port, interface)
+                    host_port, interface = host_bind
+                    return PortBinding(ex_port, host_port, interface, False)
+                elif s_len == 3:  # Port, (host port, interface, ipv6)
+                    host_port, interface, ipv6 = host_bind
+                    return PortBinding(ex_port, host_port, interface, ipv6)
             raise ValueError("Invalid sub-element type or length. Needs to be a port number or a tuple / list: "
-                             "(port, interface).")
-        elif len(value) == 3:
+                             "(port, interface) or (port, interface, ipv6).")
+        elif v_len == 3:
             ex_port, host_port, interface = value
-            return PortBinding(ex_port, host_port, interface)
-        raise ValueError("Invalid element length; only tuples and lists of length 2 or 3 can be converted to a "
+            return PortBinding(ex_port, host_port, interface, False)
+        elif v_len == 4:
+            ex_port, host_port, interface, ipv6 = value
+            return PortBinding(ex_port, host_port, interface, ipv6)
+        raise ValueError("Invalid element length; only tuples and lists of length 2 to 4 can be converted to a "
                          "PortBinding tuple.")
     raise ValueError("Invalid type; expected a list, tuple, int or string type, found "
                      "{0}.".format(type(value).__name__))
@@ -260,14 +272,16 @@ def get_exec_command(value):
     if isinstance(value, ExecCommand):
         return value
     elif isinstance(value, six.string_types + (lazy_type, )):
-        return ExecCommand(value, None)
+        return ExecCommand(value, None, EXEC_POLICY_RESTART)
     elif isinstance(value, (list, tuple)):
         v_len = len(value)
-        if v_len == 2:
+        if v_len == 3:
             return ExecCommand(*value)
+        elif v_len == 2:
+            return ExecCommand(value[0], value[1], EXEC_POLICY_RESTART)
         elif v_len == 1:
-            return ExecCommand(value[0], None)
-        raise ValueError("Invalid element length; only tuples and lists of length 1-2 can be converted to a "
+            return ExecCommand(value[0], None, EXEC_POLICY_RESTART)
+        raise ValueError("Invalid element length; only tuples and lists of length 1-3 can be converted to a "
                          "ExecCommand tuple. Found length {0}.".format(v_len))
     raise ValueError("Invalid type; expected a list, tuple, or string type, found {0}.".format(type(value).__name__))
 
@@ -322,9 +336,9 @@ def get_network_mode(value):
     configuration of the container is returned.
 
     :param value: Network mode input.
-    :type value: unicode | tuple | list | NoneType
+    :type value: unicode | str | tuple | list | NoneType
     :return: Network mode or container to re-use the network stack of.
-    :rtype: unicode | tuple | NoneType
+    :rtype: unicode | str | tuple | NoneType
     """
     if not value or value == 'disabled':
         return None

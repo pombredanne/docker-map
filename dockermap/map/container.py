@@ -3,6 +3,8 @@ from __future__ import unicode_literals
 
 from collections import Counter, defaultdict
 import itertools
+from operator import itemgetter
+
 import six
 
 from . import DictMap
@@ -10,9 +12,11 @@ from .config import ContainerConfiguration, HostVolumeConfiguration
 from .input import get_list
 
 
-SINGLE_ATTRIBUTES = 'repository', 'default_domain', 'set_hostname', 'use_attached_parent_name'
+SINGLE_ATTRIBUTES = 'repository', 'default_domain', 'set_hostname', 'use_attached_parent_name', 'default_tag'
 DICT_ATTRIBUTES = 'volumes', 'host'
 LIST_ATTRIBUTES = 'clients',
+
+get_map_config = itemgetter(0, 1)
 
 
 class MapIntegrityError(Exception):
@@ -31,7 +35,7 @@ class ContainerMap(object):
     Class for merging container configurations, host shared volumes and volume alias names.
 
     :param name: Name for this container map.
-    :type name: unicode
+    :type name: unicode | str
     :param initial: Initial container configurations, host shares, and volumes.
     :type initial: dict
     :param check_integrity: If initial values are given, the container integrity is checked by default at the end of
@@ -51,9 +55,10 @@ class ContainerMap(object):
         self._default_domain = None
         self._set_hostname = True
         self._use_attached_parent_name = False
+        self._default_tag = 'latest'
         self._extended = False
         self.update(initial, **kwargs)
-        if (initial or kwargs) and check_integrity:
+        if self._containers and check_integrity:
             self.check_integrity(check_duplicates=check_duplicates)
 
     def __iter__(self):
@@ -85,7 +90,7 @@ class ContainerMap(object):
                 setattr(self, key, get_list(value))
             elif key in DICT_ATTRIBUTES:
                 getattr(self, key).update(value)
-            elif value:
+            else:
                 if key == 'containers':
                     for container, config in six.iteritems(value):
                         self._containers[container].update(config)
@@ -130,7 +135,7 @@ class ContainerMap(object):
         :type items: ContainerMap
         """
         self.__class__._copy_base(items, self)
-        for container, config in items:
+        for container, config in six.iteritems(items._containers):
             self._containers[container].update(config)
 
     def _merge_from_obj(self, items, lists_only):
@@ -148,11 +153,27 @@ class ContainerMap(object):
         if not lists_only:
             for attr in SINGLE_ATTRIBUTES:
                 setattr(self, attr, getattr(items, attr))
-        for container, config in items:
+        for container, config in six.iteritems(items._containers):
             if container in self._containers:
                 self._containers[container].merge(config, lists_only)
             else:
                 self._containers[container].update(config)
+
+    def get_persistent_items(self):
+        """
+        Returns attached container items and container configurations that are marked as persistent. Each returned
+        item is in the format ``(config name, instance/attached name)``, where the instance name can also be ``None``.
+
+        :return: Lists of attached items.
+        :rtype: (list[(unicode | str, unicode | str)], list[unicode | str, unicode | str | NoneType])
+        """
+        attached_items = [(container, ac)
+                          for container, config in self
+                          for ac in config.attaches]
+        persistent_containers = [(container, ci)
+                                 for container, config in self if config.persistent
+                                 for ci in config.instances or [None]]
+        return attached_items, persistent_containers
 
     @property
     def name(self):
@@ -160,7 +181,7 @@ class ContainerMap(object):
         Container map name.
 
         :return: Container map name.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._name
 
@@ -170,7 +191,7 @@ class ContainerMap(object):
         Alias names of clients associated with this container map.
 
         :return: Client names.
-        :rtype: list[unicode]
+        :rtype: list[unicode | str]
         """
         return self._clients
 
@@ -184,7 +205,7 @@ class ContainerMap(object):
         Container configurations of the map.
 
         :return: Container configurations.
-        :rtype: dict[unicode, dockermap.map.config.ContainerConfiguration]
+        :rtype: dict[unicode | str, dockermap.map.config.ContainerConfiguration]
         """
         return self._containers
 
@@ -214,7 +235,7 @@ class ContainerMap(object):
         Repository prefix for images. This is prepended to image names used by container configurations.
 
         :return: Repository prefix.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._repository
 
@@ -228,7 +249,7 @@ class ContainerMap(object):
         Value to use as domain name for new containers, unless the client specifies otherwise.
 
         :return: Default domain name.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._default_domain
 
@@ -265,7 +286,17 @@ class ContainerMap(object):
         self._use_attached_parent_name = value
 
     @property
-    def dependency_items(self):
+    def default_tag(self):
+        """
+        Default tag to use for images where it is not specified. Default is ``latest``.
+        """
+        return self._default_tag
+
+    @default_tag.setter
+    def default_tag(self, value):
+        self._default_tag = value
+
+    def dependency_items(self, reverse=False):
         """
         Generates all containers' dependencies, i.e. an iterator on tuples in the format
         ``(container_name, used_containers)``, whereas the used containers are a set, and can be empty.
@@ -308,16 +339,38 @@ class ContainerMap(object):
         else:
             used_func = _get_used_item_ap
 
-        for c_name, c_config in ext_map:
-            used_set = set(map(used_func, c_config.uses))
-            linked_set = set(map(_get_linked_item, c_config.links))
-            dep_set = used_set | linked_set
-            nw = c_config.network
+        def _get_dep_set(config):
+            used_set = set(map(used_func, config.uses))
+            linked_set = set(map(_get_linked_item, config.links))
+            d_set = used_set | linked_set
+            nw = config.network
             if isinstance(nw, tuple):
-                dep_set.add((self._name, ) + nw)
-            for c_instance in c_config.instances:
-                yield (self._name, c_name, c_instance), dep_set
-            yield (self._name, c_name, None), dep_set
+                d_set.add((self._name, ) + nw)
+            return d_set
+
+        def _get_grouped_instances(d_map_config, d_instances):
+            d_map_name, d_config_name = d_map_config
+            d_config = ext_map.get_existing(d_config_name)
+            if not d_config:
+                raise KeyError("Dependency {0}.{1} for {2}.{3} not found.".format(
+                               d_map_name, d_config_name, self._name, c_name))
+            if d_config.instances and (None in d_instances or len(d_instances) == len(d_config.instances)):
+                return d_map_name, d_config_name, (None, )
+            return d_map_name, d_config_name, d_instances
+
+        if reverse:
+            # Consolidate dependents.
+            for c_name, c_config in ext_map:
+                dep_set = set(map(get_map_config, _get_dep_set(c_config)))
+                yield (self._name, c_name, (None, )), dep_set
+        else:
+            # Group instances, or replace with None where all of them are used.
+            for c_name, c_config in ext_map:
+                dep_set = _get_dep_set(c_config)
+                instance_set = set(_get_grouped_instances(map_config, tuple(di[2] for di in items))
+                                   for map_config, items in itertools.groupby(sorted(dep_set, key=get_map_config),
+                                                                              get_map_config))
+                yield (self._name, c_name), instance_set
 
     def get(self, item):
         """
@@ -325,7 +378,7 @@ class ContainerMap(object):
         returned (to avoid this, use :meth:`get_existing` instead). `item` can be any valid Docker container name.
 
         :param item: Container name.
-        :type item: unicode
+        :type item: unicode | str
         :return: A container configuration.
         :rtype: ContainerConfiguration
         """
@@ -337,7 +390,7 @@ class ContainerMap(object):
         returned instead in this case.
 
         :param item: Container name.
-        :type item: unicode
+        :type item: unicode | str
         :return: A container configuration
         :rtype: ContainerConfiguration
         """

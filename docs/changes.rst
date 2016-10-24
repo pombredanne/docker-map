@@ -2,6 +2,72 @@
 
 Change History
 ==============
+0.7.0
+-----
+* Refactoring of policy framework. The monolithic client action functions have been divided into separate
+  modules for improving maintainability and testing. This also makes it easier to add more functionality.
+  A few minor issues with updating containers and executing commands were resolved during this change.
+* Added an experimental command line generator.
+
+0.6.6
+-----
+* Added evaluation of ``.dockerignore`` files.
+* Several bugfixes from `0.6.6b1`.
+
+0.6.6b1
+-------
+* Added arguments to set additional image tags after build.
+* Added ``default_tag`` property to container maps.
+* Minor refactoring. Possibly breaks compatibility in custom policy implementations:
+
+  * ``dockermap.map.policy.cache.CachedImages.reset_latest`` has been renamed to
+    :meth:`~dockermap.map.policy.cache.CachedImages.reset_updated`.
+  * :meth:``dockermap.map.policy.cache.CachedImages.ensure_image`` argument ``pull_latest`` has been renamed to
+    ``pull``.
+  * ``dockermap.map.policy.update.ContainerUpdateMixin.pull_latest`` has been renamed to
+    :attr:`~dockermap.map.policy.update.ContainerUpdateMixin.pull_before_update`.
+  * ``dockermap.map.policy.base.BasePolicy.iname`` has been renamed to
+    :meth:`~dockermap.map.policy.base.BasePolicy.image_name` and changed order of arguments for allowing defaults.
+
+0.6.5
+-----
+* Better support for IPv6 addresses. Added ``ipv6`` flag to port bindings and ``interfaces_ipv6`` property to client
+  configuration.
+* Command elements are converted into strings so that Dockerfiles with a numeric command line element do not raise
+  errors.
+
+0.6.4
+-----
+* Fixed exception on stopping a container configuration when the container does not exist.
+
+0.6.3
+-----
+* Improved fixed behavior when merging container maps and embedded container configurations. Can also be used for
+  creating copies.
+* Added ``stop_timeout`` argument to ``remove_all_containers``.
+* Fixed transfer of configuration variables into client instance.
+
+0.6.2
+-----
+* Added ``stop_signal`` for customizing the signal that is used for shutting down or restarting containers.
+* Minor changes in docs and log messages.
+* Fixed image cache update with multiple tags.
+* Bugfix in Dockerfile module.
+
+0.6.1
+-----
+* Many more Python 3 fixes (`PR #10 <https://github.com/merll/docker-map/pull/10>`_).
+* Cleaned up logging; only using default levels.
+* Port bindings are passed as lists to the API, allowing container ports to be published to multiple host
+  ports and interfaces.
+
+0.6.0
+-----
+* Added ``exec_commands`` to start additional commands (e.g. scripts) along with the container.
+* Container links are now passed as lists to the API, so that the same container can be linked with multiple
+  aliases.
+* Various compatibility fixes with Python 3 (`PR #9 <https://github.com/merll/docker-map/pull/9>`_).
+* Bugfixes on container restart and configuration merge.
 
 0.5.3
 -----
@@ -24,7 +90,7 @@ Change History
 * Implemented HostConfig during container creation, which is preferred over passing arguments during start since API
   v1.15. For older API versions, start keyword arguments will be used.
 * Added configuration inheritance and abstract configurations.
-* Changed log functions to be better fit Python logging.
+* Changed log functions to better fit Python logging.
 * Minor fixes in merge functions.
 * Bug fix in tag / repository partitioning (`PR #7 <https://github.com/merll/docker-map/pull/7>`_).
 

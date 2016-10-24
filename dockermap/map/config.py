@@ -1,18 +1,22 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+from distutils.version import StrictVersion
 import posixpath
 import six
 
+from ..client.base import DockerClientWrapper
 from ..functional import resolve_value
 from . import DictMap
-from .base import DockerClientWrapper
 from .input import (get_list, get_shared_volumes, get_shared_host_volumes, get_container_links, get_network_mode,
                     get_port_bindings, get_exec_commands, NotSet)
 
-SINGLE_ATTRIBUTES = 'image', 'user', 'permissions', 'persistent', 'stop_timeout', 'network'
+SINGLE_ATTRIBUTES = 'image', 'user', 'permissions', 'persistent', 'stop_timeout', 'stop_signal', 'network'
 DICT_ATTRIBUTES = 'create_options', 'start_options', 'host_config'
 LIST_ATTRIBUTES = 'instances', 'shares', 'attaches', 'clients'
+
+HOST_CONFIG_VERSION = StrictVersion(str('1.15'))
+USE_HC_MERGE = 'merge'
 
 
 def get_host_path(root, path, instance=None):
@@ -21,17 +25,20 @@ def get_host_path(root, path, instance=None):
     name.
 
     :param root: Root path to prepend, if ``path`` does not already describe an absolute path.
-    :type root: unicode | AbstractLazyObject
+    :type root: unicode | str | AbstractLazyObject
     :param path: Path string or dictionary of per-instance paths.
-    :type path: unicode | dict | AbstractLazyObject
+    :type path: unicode | str | dict | AbstractLazyObject
     :param instance: Optional instance name.
-    :type instance: unicode
+    :type instance: unicode | str
     :return: Path on the host that is mapped to the container volume.
-    :rtype: unicode
+    :rtype: unicode | str
     """
     r_val = resolve_value(path)
     if isinstance(r_val, dict):
-        r_path = resolve_value(r_val.get(instance or 'default'))
+        r_instance = instance or 'default'
+        r_path = resolve_value(r_val.get(r_instance))
+        if not r_path:
+            raise ValueError("No path defined for instance {0}.".format(r_instance))
     else:
         r_path = r_val
     r_root = resolve_value(root)
@@ -65,6 +72,7 @@ class ContainerConfiguration(object):
         self._create_kwargs = NotSet
         self._host_config_kwargs = NotSet
         self._stop_timeout = NotSet
+        self._stop_signal = NotSet
         self._network = NotSet
         self.update(kwargs)
 
@@ -89,7 +97,7 @@ class ContainerConfiguration(object):
         """
 
         :return:
-        :rtype: list[unicode]
+        :rtype: list[unicode | str]
         """
         return self._extends
 
@@ -104,7 +112,7 @@ class ContainerConfiguration(object):
         has the same name.
 
         :return: Base image name.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._image
 
@@ -123,7 +131,7 @@ class ContainerConfiguration(object):
         containers will be created for each instance in the format `map_name.container_name.instance`.
 
         :return: Instance names.
-        :rtype: list[unicode]
+        :rtype: list[unicode | str]
         """
         return self._instances
 
@@ -137,7 +145,7 @@ class ContainerConfiguration(object):
         Shared volumes for a container.
 
         :return: Shared volumes.
-        :rtype: list[unicode]
+        :rtype: list[unicode | str]
         """
         return self._shares
 
@@ -167,7 +175,7 @@ class ContainerConfiguration(object):
         names if all volumes are to be used of that container.
 
         :return: Used volumes.
-        :rtype: list[unicode]
+        :rtype: list[dockermap.map.input.SharedVolume]
         """
         return self._uses
 
@@ -198,7 +206,7 @@ class ContainerConfiguration(object):
         available to other containers.
 
         :return: Attached containers.
-        :rtype: list[unicode]
+        :rtype: list[unicode | str]
         """
         return self._attaches
 
@@ -237,8 +245,9 @@ class ContainerConfiguration(object):
     @property
     def exec_commands(self):
         """
-        Commands to run as soon as the container is started. Set in the format `ExecCommand(cmd, user)`, where the
-        user is set to the same as this configuration's user by default (or root, if not available).
+        Commands to run as soon as the container is started. Set in the format `ExecCommand(cmd, user, policy)`, where
+        the user is set to the same as this configuration's user by default (or root, if not available). The policy
+        decides when to start the command.
 
         :return: Commands to run when the container is started.
         :rtype: list[dockermap.map.input.ExecCommand]
@@ -257,7 +266,7 @@ class ContainerConfiguration(object):
         (`(user_name, group_name)`), or int (`user_id`).
 
         :return: User name and (optional) group.
-        :rtype: unicode | tuple | int
+        :rtype: unicode | str | tuple | int
         """
         return self._user
 
@@ -275,7 +284,7 @@ class ContainerConfiguration(object):
         Permission flags to be set for attached volumes. Can be in any notation accepted by `chmod`.
 
         :return: Permission flags.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._permissions
 
@@ -316,7 +325,7 @@ class ContainerConfiguration(object):
         specified globally for a map.
 
         :return: Container configuration clients.
-        :rtype: list[unicode]
+        :rtype: list[unicode | str]
         """
         return self._clients
 
@@ -358,7 +367,7 @@ class ContainerConfiguration(object):
     @property
     def stop_timeout(self):
         """
-        Individual timeout (in seconds) for stopping a container, i.e. the time between sending a ``SIGINT`` and a
+        Individual timeout (in seconds) for stopping a container, i.e. the time between sending a ``SIGTERM`` and a
         ``SIGKILL`` to the container.
 
         :return: Container stop timeout.
@@ -375,6 +384,26 @@ class ContainerConfiguration(object):
         self._stop_timeout = NotSet
 
     @property
+    def stop_signal(self):
+        """
+        By default Docker sends ``SIGTERM`` to containers on stop or restart. This may not always be the best signal
+        to get the main process to shut down properly. This property can for example be set to ``SIGINT``, where
+        more appropriate.
+
+        :return: Stop signal.
+        :rtype: int | unicode | str
+        """
+        return self._stop_signal
+
+    @stop_signal.setter
+    def stop_signal(self, value):
+        self._stop_signal = value
+
+    @stop_signal.deleter
+    def stop_signal(self):
+        self._stop_signal = NotSet
+
+    @property
     def network(self):
         """
         Networking to apply to this container. If not ``bridge`` or ``host`` (as described in the docker-py
@@ -382,7 +411,7 @@ class ContainerConfiguration(object):
         name. Setting it to ``disabled`` deactivates networking for the container.
 
         :return: Container networking setting.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._network
 
@@ -396,15 +425,49 @@ class ContainerConfiguration(object):
 
     def update(self, values):
         """
-        Updates the container configuration with the contents of the given dictionary, if keys are valid attributes for
-        this class. Existing attributes are replaced with the new values.
+        Updates the container configuration with the contents of the given configuration object or dictionary. In case
+        of a dictionary, only valid attributes for this class are considered. Existing attributes are replaced with
+        the new values.
 
-        :param values: Dictionary to update this container configuration with.
-        :type values: dict
+        :param values: Dictionary or ContainerConfiguration object to update this container configuration with.
+        :type values: dict | ContainerConfiguration
         """
-        for key, value in six.iteritems(values):
-            if hasattr(self, key):
-                setattr(self, key, value)
+        if isinstance(values, ContainerConfiguration):
+            self._abstract = values._abstract
+            self._extends = values._extends[:]
+            self._image = values._image
+            self._instances = values._instances[:]
+            self._shares = values._shares[:]
+            self._binds = values._binds[:]
+            self._uses = values._uses[:]
+            self._links_to = values._links_to[:]
+            self._attaches = values._attaches[:]
+            self._exposes = values._exposes[:]
+            self._exec = values._exec[:]
+            self._user = values._user
+            self._permissions = values._permissions
+            self._persistent = values._persistent
+            if values._clients is NotSet:
+                self._clients = NotSet
+            else:
+                self._clients = values._clients[:]
+            if values._create_kwargs is NotSet:
+                self._create_kwargs = NotSet
+            else:
+                self._create_kwargs = values._create_kwargs.copy()
+            if values._host_config_kwargs is NotSet:
+                self._host_config_kwargs = NotSet
+            else:
+                self._host_config_kwargs = values._host_config_kwargs.copy()
+            self._stop_timeout = values._stop_timeout
+            self._stop_signal = values._stop_signal
+            self._network = values._network
+        elif isinstance(values, dict):
+            for key, value in six.iteritems(values):
+                if hasattr(self, key):
+                    setattr(self, key, value)
+        else:
+            raise ValueError("ContainerConfiguration or dictionary expected; found '{0}'.".format(type(values)))
 
     def merge(self, values, lists_only=False):
         """
@@ -489,7 +552,7 @@ class HostVolumeConfiguration(DictMap):
     Class for storing volumes, as shared from the host with Docker containers.
 
     :param root: Optional root directory for host volumes.
-    :type root: unicode
+    :type root: unicode | str
     """
     def __init__(self, root=None, *args, **kwargs):
         self._root = root
@@ -502,7 +565,7 @@ class HostVolumeConfiguration(DictMap):
         this.
 
         :return: Root directory for host volumes.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._root
 
@@ -510,8 +573,8 @@ class HostVolumeConfiguration(DictMap):
     def root(self, value):
         self._root = value
 
-    def get(self, item, instance=None):
-        return get_host_path(self._root, super(HostVolumeConfiguration, self).get(item), instance)
+    def get_path(self, item, instance=None):
+        return get_host_path(self._root, self[item], instance)
 
 
 class ClientConfiguration(DictMap):
@@ -520,9 +583,9 @@ class ClientConfiguration(DictMap):
     instances.
 
     :param base_url: URL of the Docker Remote API.
-    :type base_url: unicode
+    :type base_url: unicode | str
     :param version: Docker Remote API version.
-    :type version: unicode
+    :type version: unicode | str
     :param timeout: Request timeout.
     :type timeout: int
     :param args: Further initializing dictionary with values.
@@ -534,13 +597,19 @@ class ClientConfiguration(DictMap):
     def __init__(self, base_url=None, version=None, timeout=None, *args, **kwargs):
         self._base_url = base_url
         self._version = version
+        self.use_host_config = kwargs.pop('use_host_config', False)
         self._timeout = timeout
         if 'interfaces' in kwargs:
             self._interfaces = DictMap(kwargs.pop('interfaces'))
         else:
             self._interfaces = DictMap()
+        if 'interfaces_ipv6' in kwargs:
+            self._interfaces_ipv6 = DictMap(kwargs.pop('interfaces_ipv6'))
+        else:
+            self._interfaces_ipv6 = DictMap()
         self._client = kwargs.pop('client', None)
         super(ClientConfiguration, self).__init__(*args, **kwargs)
+        self.update_settings(version=version)
 
     @classmethod
     def from_client(cls, client):
@@ -551,8 +620,18 @@ class ClientConfiguration(DictMap):
         :type client: docker.client.Client
         :return: ClientConfiguration
         """
-        return cls(base_url=client.base_url, version=client.api_version,
-                   timeout=client.timeout, client=client)
+        kwargs = {}
+        for attr in cls.init_kwargs:
+            if hasattr(client, attr):
+                kwargs[attr] = getattr(client, attr)
+        if hasattr(client, 'api_version'):
+            kwargs['version'] = client.api_version
+        return cls(**kwargs)
+
+    def update_settings(self, **kwargs):
+        version = kwargs.pop('version', None)
+        if version and version != 'auto':
+            self.use_host_config = str(version) >= HOST_CONFIG_VERSION
 
     def get_init_kwargs(self):
         """
@@ -563,9 +642,10 @@ class ClientConfiguration(DictMap):
         """
         def _if_set():
             for k in self.init_kwargs:
-                v = self.get(k)
-                if v:
-                    yield k, v
+                if hasattr(self, k):
+                    yield k, getattr(self, k)
+                elif k in self:
+                    yield k, self[k]
 
         return dict(_if_set())
 
@@ -579,10 +659,12 @@ class ClientConfiguration(DictMap):
         """
         client = self._client
         if not client:
-            client = self.client_constructor(**self.get_init_kwargs())
-            self._client = client
+            c_kwargs = self.get_init_kwargs()
+            self._client = client = self.client_constructor(**self.get_init_kwargs())
             # Client might update the version number after construction.
-            self._version = client.api_version
+            updated_version = getattr(client, 'api_version', None)
+            if updated_version:
+                self.version = updated_version
         return client
 
     @property
@@ -592,7 +674,7 @@ class ClientConfiguration(DictMap):
         the client.
 
         :return: URL
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._base_url
 
@@ -608,13 +690,14 @@ class ClientConfiguration(DictMap):
         on the client.
 
         :return: Docker API version.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._version
 
     @version.setter
     def version(self, value):
         self._version = value
+        self.update_settings(version=value)
 
     @property
     def timeout(self):
@@ -646,6 +729,20 @@ class ClientConfiguration(DictMap):
     @interfaces.setter
     def interfaces(self, value):
         self._interfaces = DictMap(value)
+
+    @property
+    def interfaces_ipv6(self):
+        """
+        Same as :attr:`ClientConfiguration.interfaces`, but for assigning IPv6 interface addresses.
+
+        :return: Network interface configuration.
+        :rtype: DictMap
+        """
+        return self._interfaces_ipv6
+
+    @interfaces_ipv6.setter
+    def interfaces_ipv6(self, value):
+        self._interfaces_ipv6 = DictMap(value)
 
     @property
     def client(self):

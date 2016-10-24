@@ -2,12 +2,9 @@
 from __future__ import unicode_literals
 
 from abc import ABCMeta, abstractmethod
-from six import with_metaclass
+import six
 from tempfile import NamedTemporaryFile
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
+from io import BytesIO
 
 
 class FinalizedError(Exception):
@@ -18,7 +15,7 @@ class FinalizedError(Exception):
     pass
 
 
-class DockerBuffer(with_metaclass(ABCMeta, object)):
+class DockerBuffer(six.with_metaclass(ABCMeta, object)):
     """
     Abstract class for managing Docker file-like objects. Subclasses must override at least :attr:`init_fileobj` with
     a callable which constructs the actual file-like object.
@@ -33,9 +30,6 @@ class DockerBuffer(with_metaclass(ABCMeta, object)):
             raise ValueError("Class attribute 'init_fileobj' must be callable.")
         self._fileobj = self.init_fileobj(*args, **kwargs)
         self._finalized = False
-
-    def __repr__(self):
-        return self._fileobj.getvalue().encode('utf-8')
 
     def __enter__(self):
         return self
@@ -66,7 +60,7 @@ class DockerBuffer(with_metaclass(ABCMeta, object)):
         Returns the current value of the buffer.
 
         :return: Representation if the buffer.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         return self._fileobj.getvalue()
 
@@ -78,15 +72,13 @@ class DockerBuffer(with_metaclass(ABCMeta, object)):
         self._finalized = True
 
     @abstractmethod
-    def save(self, name, encoding=None):
+    def save(self, name):
         """
         Saves the buffer content (e.g. to a file). This is abstract since it depends the type of the backing file-like
         object. Implementations will usually finalize the buffer.
 
         :param name: Name to store the contents under.
-        :type name: unicode
-        :param encoding: Optional, apply content encoding before saving.
-        :type encoding: unicode
+        :type name: unicode | str
         """
         pass
 
@@ -97,41 +89,43 @@ class DockerBuffer(with_metaclass(ABCMeta, object)):
         self._fileobj.close()
 
 
-class DockerStringBuffer(with_metaclass(ABCMeta, DockerBuffer)):
+class DockerStringBuffer(six.with_metaclass(ABCMeta, DockerBuffer)):
     """
-    Partial implementation of :class:`~DockerBuffer`, backed by a :class:`~StringIO` buffer.
+    Partial implementation of :class:`~DockerBuffer`, backed by a :class:`~BytesIO` buffer.
     """
-    init_fileobj = StringIO
+    init_fileobj = BytesIO
 
-    def save(self, name, encoding='utf-8'):
+    def save(self, name):
         """
         Save the string buffer to a file. Finalizes prior to saving.
 
         :param name: File path.
-        :type name: unicode
-        :param encoding: Optional, default is `utf-8`.
-        :type encoding: unicode
+        :type name: unicode | str
         """
         self.finalize()
         with open(name, 'wb+') as f:
-            if encoding:
-                f.write(self.getvalue().encode(encoding))
+            if six.PY3:
+                f.write(self.fileobj.getbuffer())
             else:
-                f.write(self.getvalue())
+                f.write(self.fileobj.getvalue().encode('utf-8'))
 
 
-class DockerTempFile(with_metaclass(ABCMeta, DockerBuffer)):
+def init_temp_file(obj):
+    return NamedTemporaryFile('wb+')
+
+
+class DockerTempFile(six.with_metaclass(ABCMeta, DockerBuffer)):
     """
     Partial implementation of :class:`~DockerBuffer`, backed by a :class:`~tempfile.NamedTemporaryFile`.
     """
-    init_fileobj = lambda self: NamedTemporaryFile('wb+')
+    init_fileobj = init_temp_file
 
     def save(self, name):
         """
         Copy the contents of the temporary file somewhere else. Finalizes prior to saving.
 
         :param name: File path.
-        :type name: unicode
+        :type name: unicode | str
         """
         self.finalize()
         with open(name, 'wb+') as f:

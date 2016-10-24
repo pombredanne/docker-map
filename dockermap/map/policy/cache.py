@@ -26,13 +26,15 @@ class CachedImages(CachedItems, dict):
     Dictionary of image names and ids, which also keeps track of the client object to pull images if necessary.
     """
     def __init__(self, *args, **kwargs):
-        self._latest = set()
+        self._updated = set()
         super(CachedImages, self).__init__(*args, **kwargs)
 
     def refresh(self):
         """
         Fetches image and their ids from the client.
         """
+        if not self._client:
+            return
         current_images = self._client.images()
         self.clear()
         for image in current_images:
@@ -40,23 +42,25 @@ class CachedImages(CachedItems, dict):
             if tags:
                 self.update({tag: image['Id'] for tag in tags})
 
-    def reset_latest(self):
+    def reset_updated(self):
         """
-        Resets the cache which images have been pulled (i.e. updated to the latest version.)
+        Resets the cache which images have been pulled (i.e. updated on the default tag.)
         """
-        self._latest = set()
+        self._updated = set()
 
-    def ensure_image(self, image_name, pull_latest=False, insecure_registry=False):
+    def ensure_image(self, image_name, pull=False, insecure_registry=False):
         """
         Ensures that a particular image is present on the client. If it is not, a new copy is pulled from the server.
 
         :param image_name: Image name. If it does not include a specific tag, ``latest`` is assumed.
-        :type image_name: unicode
-        :param pull_latest: If the image includes a latest-tag, pull it from the server. This is is done only once in
-         for the lifecycle of the cache, or unless `:meth:reset_latest` is called.
-        :type pull_latest: bool
+        :type image_name: unicode | str
+        :param pull: If the image includes a tag, pull it from the server even if it exists. This is is done only once
+          in for the lifecycle of the cache, or unless `:meth:reset_updated` is called.
+        :type pull: bool
+        :param insecure_registry: Pull from an insecure registry where necessary.
+        :type insecure_registry: bool
         :return: Image id associated with the image name.
-        :rtype: unicode
+        :rtype: unicode | str
         """
         image, __, tag = image_name.rpartition(':')
         if image:
@@ -65,20 +69,18 @@ class CachedImages(CachedItems, dict):
             full_name = '{0}:latest'.format(image_name)
             image = image_name
             tag = 'latest'
-        update_latest = pull_latest and tag == 'latest' and full_name not in self._latest
-        if update_latest or full_name not in self:
+        if (pull and full_name not in self._updated) or full_name not in self:
             self._client.pull(repository=image, tag=tag, insecure_registry=insecure_registry)
-            images = self._client.images(name=image_name)
-            if images:
-                new_image = images[0]
+            images = self._client.images(name=image)
+            for new_image in images:
                 tags = new_image.get('RepoTags')
                 if tags:
-                    self._latest.update(tags)
+                    self._updated.update(tags)
                     self.update({tag: new_image['Id'] for tag in tags})
         try:
             return self[full_name]
         except KeyError:
-            raise KeyError("Image '{0}' not found.".format(full_name))
+            raise KeyError("Image not found.", full_name)
 
 
 class CachedContainerNames(CachedItems, set):
@@ -86,6 +88,8 @@ class CachedContainerNames(CachedItems, set):
         """
         Fetches all current container names from the client.
         """
+        if not self._client:
+            return
         current_containers = self._client.containers(all=True)
         self.clear()
         for container in current_containers:
@@ -100,7 +104,7 @@ class DockerHostItemCache(dict):
     their existence does not have to be checked separately for every action.
 
     :param clients: Dictionary of clients with alias and client object.
-    :type clients: dict[unicode, dockermap.map.config.ClientConfiguration]
+    :type clients: dict[unicode | str, dockermap.map.config.ClientConfiguration]
     """
     item_class = None
 
@@ -113,7 +117,7 @@ class DockerHostItemCache(dict):
         Retrieves the items associated with the given client. Returned results are cached for later use.
 
         :param item: Client name.
-        :type item: unicode
+        :type item: unicode | str
         :return: Items in the cache.
         """
         if item not in self:
@@ -125,7 +129,7 @@ class DockerHostItemCache(dict):
         Forces a refresh of a cached item.
 
         :param item: Client name.
-        :type item: unicode
+        :type item: unicode | str
         :return: Items in the cache.
         :rtype: DockerHostItemCache.item_class
         """

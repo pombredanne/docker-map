@@ -3,9 +3,10 @@ from __future__ import unicode_literals
 
 from abc import ABCMeta, abstractmethod
 
-from six import iteritems, text_type, with_metaclass
+from six import iteritems, text_type, with_metaclass, python_2_unicode_compatible
 
 
+@python_2_unicode_compatible
 class AbstractLazyObject(with_metaclass(ABCMeta, object)):
     """
     Abstract superclass class for lazily-resolved values. Runs function ``func`` with ``*args`` and ``**kwargs``, when
@@ -31,9 +32,6 @@ class AbstractLazyObject(with_metaclass(ABCMeta, object)):
         return self.get()
 
     def __str__(self):
-        return self.__unicode__()
-
-    def __unicode__(self):
         return text_type(self.get())
 
     def __eq__(self, other):
@@ -163,7 +161,7 @@ def expand_type_name(type_):
     :param type_: Type:
     :type type_: type
     :return: Type name, as ``<type's module name>.<type name>``.
-    :rtype: unicode
+    :rtype: unicode | str
     """
     return '{0.__module__}.{0.__name__}'.format(type_)
 
@@ -175,7 +173,7 @@ def resolve_value(value):
 
     :param value: Lazy object, registered type in :attr:`type_registry`, or a simple value. In the
      latter case, the value is returned as-is.
-    :type value: str or unicode or int or AbstractLazyObject or unknown
+    :type value: str | unicode | int | AbstractLazyObject | unknown
     :return: Resolved value.
     """
     if isinstance(value, lazy_type):
@@ -196,7 +194,7 @@ def resolve_deep(values, max_depth=5, types=None):
      returned as they are.
     :type max_depth: int
     :param: Dictionary of types and functions to resolve, that are not registered in ``type_registry``.
-    :type: dict[unicode, function]
+    :type: dict[unicode | str, function]
     :return: Resolved values.
     """
     def _resolve_single(value):

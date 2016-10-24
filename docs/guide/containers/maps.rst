@@ -131,8 +131,14 @@ the following properties:
 Image
 """""
 The :attr:`~dockermap.map.config.ContainerConfiguration.image` simply sets the image to instantiate the container(s)
-from. If :attr:`~dockermap.map.container.ContainerMap.repository` is set on the parent
-:class:`~dockermap.map.container.ContainerMap`, it will be used as a prefix to the image name.
+from. As usual, new containers are used from the image with the ``latest`` tag, unless explicitly specified using a
+colon after ithe image name, e.g. ``ubuntu:16.10``. Using the :attr:`~dockermap.map.container.ContainerMap.default_tag`
+property on the parent map, this becomes the new default tag. For example, if you usually tag all `development` images
+as ``devel`` and set :attr:`~dockermap.map.container.ContainerMap.default_tag` accordingly, setting
+:attr:`~dockermap.map.config.ContainerConfiguration.image` to ``image1`` results in using the image ``image1:devel``.
+
+If :attr:`~dockermap.map.container.ContainerMap.repository` is set on the parent
+:class:`~dockermap.map.container.ContainerMap`, it will be used as a prefix to image names.
 
 For example, if you have a local registry under `registry.example.com`, you likely do not want to name each of your
 images separately as ``registry.example.com/image1``, ``registry.example.com/image2``, and so on. Instead, just set
@@ -140,10 +146,39 @@ the :attr:`~dockermap.map.config.ContainerConfiguration.repository` to ``registr
 ``image1``, ``image2`` etc.
 
 As an exception, any image with ``/`` in its name will not be prefixed. In order to configure the `ubuntu` image,
-set :attr:`~dockermap.map.config.ContainerConfiguration.image` to ``/ubuntu``.
+set :attr:`~dockermap.map.config.ContainerConfiguration.image` to ``/ubuntu`` or ``/ubuntu:16.10``.
 
 If the image is not set at all, by default an image with the same name as the container will be attempted to use. Where
-applicable, it is prefixed with the :attr:`~dockermap.map.container.ContainerMap.repository`.
+applicable, it is prefixed with the :attr:`~dockermap.map.container.ContainerMap.repository` or enhanced with
+:attr:`~dockermap.map.container.ContainerMap.default_tag`.
+
+Examples, assuming the configuration name is ``app-server``:
+
++---------------+----------------------+-----------------+----------------------------------------+
+| ``image``     | ``repository``       | ``default_tag`` | Expanded image name                    |
++===============+======================+=================+========================================+
+| --            | --                   | --              | app-server:latest                      |
++---------------+                      |                 +----------------------------------------+
+| image1        |                      |                 | image1:latest                          |
++---------------+----------------------+                 +----------------------------------------+
+| --            | registry.example.com |                 | registry.example.com/app-server:latest |
++---------------+                      |                 +----------------------------------------+
+| image1        |                      |                 | registry.example.com/image1:latest     |
++---------------+----------------------+-----------------+----------------------------------------+
+| --            | --                   | devel           | app-server:devel                       |
++---------------+                      |                 +----------------------------------------+
+| image1        |                      |                 | image1:devel                           |
++---------------+----------------------+                 +----------------------------------------+
+| --            | registry.example.com |                 | registry.example.com/app-server:devel  |
++---------------+                      |                 +----------------------------------------+
+| image1        |                      |                 | registry.example.com/image1:devel      |
++---------------+                      |                 +----------------------------------------+
+| /image1       |                      |                 | image1:devel                           |
++---------------+                      |                 +----------------------------------------+
+| image1:one    |                      |                 | registry.example.com/image1:one        |
++---------------+                      |                 +----------------------------------------+
+| /image1:two   |                      |                 | image1:two                             |
++---------------+----------------------+-----------------+----------------------------------------+
 
 .. _instances:
 
@@ -166,7 +201,7 @@ default specifies.
 
 Stop timeout
 """"""""""""
-When stopping or restarting a container, Docker sends a ``SIGINT`` signal to its main process. After a timeout period,
+When stopping or restarting a container, Docker sends a ``SIGTERM`` signal to its main process. After a timeout period,
 if the process is still not shut down, it receives a ``SIGKILL``. Some containers, e.g. database servers, may take
 longer than Docker's default timeout of 10 seconds. For this purpose
 :attr:`~dockermap.map.config.ContainerConfiguration.stop_timeout` can be set to a higher value.
@@ -176,6 +211,18 @@ longer than Docker's default timeout of 10 seconds. For this purpose
     This setting is also available on client level. The container configuration takes precedence over the client
     setting.
 
+Stop signal
+"""""""""""
+Not all applications handle ``SIGTERM`` in a way that is expected by Docker, so setting
+:attr:`~dockermap.map.config.ContainerConfiguration.stop_timeout` may not be sufficient. For example, PostgreSQL
+on a ``SIGTERM`` signal enters `Smart Shutdown <http://www.postgresql.org/docs/9.4/static/server-shutdown.html>`_
+mode, preventing it from accepting new connections, but not interrupting existing ones either, which can lead to a
+longer shutdown time than expected.
+
+In this case you can use a more appropriate signal, e.g. ``SIGINT``. Set either the text representation (``SIGINT``,
+``SIGQUIT``, ``SIGHUP`` etc.) or the numerical constant (see the `signal` man page) in the property
+:attr:`~dockermap.map.config.ContainerConfiguration.stop_signal`. It will be considered during stop and restart actions
+of the container. As usual, ``SIGKILL`` will be used after, if necessary.
 
 Shared volumes
 """"""""""""""
@@ -318,11 +365,13 @@ The configuration is set either through a list or tuple of the following:
 * a pair of string / integer values - publishes the exposed port (1) to the host's port (2) on all interfaces;
 * a pair of string / integer values, followed by a string - publishes the exposed port (1) to the host's port (2) on
   the interface alias name (3), which is substituted with the interface address for that interface defined by the client
-  configuration.
+  configuration;
+* additionally a fourth element - a boolean value - indicating whether it is an IPv6 address to be published. The
+  default (``False``) is to use the IPv4 address from the client configuration of the interface alias in (3).
 
-The publishing port and interface can also be placed together in a nested tuple, and the entire configuration also
-accepts a dictionary as input. All combinations are converted to :attr:`~dockermap.map.config.PortBinding` tuples with
-the elements ``(exposed_port, host_port, interface)``. Unused elements are set to ``None`` during the conversion.
+The publishing port, interface, and IPv6 flag can also be placed together in a nested tuple, and the entire
+configuration accepts a dictionary as input. All combinations are converted to :attr:`~dockermap.map.config.PortBinding`
+tuples with the elements ``(exposed_port, host_port, interface, ipv6)``.
 
 Examples::
 
@@ -332,9 +381,12 @@ Examples::
         'client1': ClientConfiguration({
             'base_url': 'unix://var/run/docker.sock',
             'interfaces': {
-                'private': '10.x.x.x',  # Example private network interface address
-                'public: '178.x.x.x',    # Example public network interface address
-            }
+                'private': '10.x.x.x',  # Example private network interface IPv4 address
+                'public: '178.x.x.x',   # Example public network interface IPv4 address
+            },
+            'interfaces_ipv6': {
+                'private': '2001:a01:a02:12f0::1',  # Example private network interface IPv6 address
+            },
         }),
         ...
     })
@@ -342,10 +394,12 @@ Examples::
     config = container_map.containers.app1
     config.clients = ['client1']
     config.exposes = [
-        (80, 80, 'public'),        # Exposes port 80 and binds it to port 80 on the public address only.
-        (9443, 443),               # Exposes port 9443 and binds to port 443 on all addresses.
-        (8000, 8000, 'private'),   # Binds port 8000 to the private network interface address.
-        8111,                      # Port 8111 will be exposed only to containers that link this one.
+        (80, 80, 'public'),           # Exposes port 80 and binds it to port 80 on the public address only.
+        (9443, 443),                  # Exposes port 9443 and binds to port 443 on all addresses.
+        (8000, 8000, 'private'),      # Binds port 8000 to the private network interface address.
+        8111,                         # Port 8111 will be exposed only to containers that link this one.
+        (8000, 80, 'private', True),  # Publishes port 8000 from the container to port 80 on the host under its private
+                                      # IPv6 address.
     ]
 
 
@@ -364,6 +418,42 @@ entirely. The following syntax is supported:
   This declares a dependency, i.e. the container referred to will be created and started before the container that is
   re-using its network. Note that if there are multiple instances, you need to specify which instance the container
   is supposed to connect to in the pattern ``<container name>.<instance name>``.
+
+Commands
+""""""""
+By default every container is started with its pre-configured entrypoint and command. These can be overwritten in each
+configuration by setting ``entrypoint`` or ``command`` in
+:attr:`~dockermap.map.config.ContainerConfiguration.create_options`.
+
+In addition to that, :attr:`~dockermap.map.config.ContainerConfiguration.exec_commands` allows for setting commands to
+run directly after the container has started, e.g. for processing additional scripts. The following input formats are
+considered:
+
+* A simple command line is launched with the configured
+  :attr:`~dockermap.map.config.ContainerConfiguration.user` of the container, or ``root`` if none has been set::
+
+    config.exec_commands = "/bin/bash -c 'script.sh'"
+    config.exec_commands = ["/bin/bash -c 'script.sh'"]
+
+* A tuple of two elements is read as ``command line, user``. This allows for overriding the user that launches the
+  command. In this case, the command line can also be a list (executeable + arguments), as allowed by the Docker API::
+
+    config.exec_commands = [
+        ("/bin/bash -c 'script1.sh'", 'root'),
+        (['/bin/bash', '-c', 'script2.sh'], 'user'),
+    ]
+
+* A third element in a tuple defines when the command should be run. :const:`dockermap.map.input.EXEC_POLICY_RESTART`
+  is the default, and starts the command each time the container is started. Setting it to
+  :const:`dockermap.map.input.EXEC_POLICY_INITIAL` indicates that the command should only be run once at container
+  creation, but not at a later time, e.g. when the container is restarted or updated::
+
+    from dockermap.map.input import EXEC_POLICY_INITIAL
+    config.exec_commands = [
+        ("/bin/bash -c 'script1.sh'", 'root'),                              # Run each time the container is started.
+        (['/bin/bash', '-c', 'script2.sh'], 'user', EXEC_POLICY_INITIAL),   # Run only when the container is created.
+    ]
+
 
 Inheritance
 """""""""""
@@ -483,6 +573,7 @@ Input formats
 On the attributes :attr:`~dockermap.map.config.ContainerConfiguration.instances`,
 :attr:`~dockermap.map.config.ContainerConfiguration.shares`,
 :attr:`~dockermap.map.config.ContainerConfiguration.uses`, :attr:`~dockermap.map.config.ContainerConfiguration.links`,
+:attr:`~dockermap.map.config.ContainerConfiguration.exec_commands`,
 :attr:`~dockermap.map.config.ContainerConfiguration.attaches`, and
 :attr:`~dockermap.map.config.ContainerConfiguration.clients`, any assignment (property set) will be converted to
 a list::
@@ -499,10 +590,11 @@ and::
 
 Additional conversions are made for :attr:`~dockermap.map.config.ContainerConfiguration.binds`,
 :attr:`~dockermap.map.config.ContainerConfiguration.uses`,
-:attr:`~dockermap.map.config.ContainerConfiguration.links`, and
-:attr:`~dockermap.map.config.ContainerConfiguration.exposes`; each element in an input list or tuple is converted to
-:attr:`~dockermap.map.config.SharedVolume`, :attr:`~dockermap.map.config.ContainerLink`, or
-:attr:`~dockermap.map.config.PortBinding`. Keep this in mind when
+:attr:`~dockermap.map.config.ContainerConfiguration.links`,
+:attr:`~dockermap.map.config.ContainerConfiguration.exposes`, and
+:attr:`~dockermap.map.config.ContainerConfiguration.exec_commands`; each element in an input list or tuple is converted
+to :attr:`~dockermap.map.config.SharedVolume`, :attr:`~dockermap.map.config.ContainerLink`,
+:attr:`~dockermap.map.config.PortBinding` or :attr:`~dockermap.map.config.ExecCommand`. Keep this in mind when
 modifying existing elements, since no automated conversion is done then. For example, for adding a host-shared volume
 at run-time, use::
 
@@ -535,10 +627,6 @@ of :class:`~dockermap.map.base.DockerClientWrapper` is recommended. Details of t
 
 Example
 ^^^^^^^
-.. NOTE::
-   The following example assumes that actions on containers are determined using the default policy class
-   :class:`~dockermap.map.policy.resume.ResumeUpdatePolicy`.
-
 This is a brief example, given a web server that communicates with two app instances of the same image over unix domain
 sockets::
 
@@ -550,7 +638,7 @@ sockets::
         'web_server': { # Configure container creation and startup
             'image': 'nginx',
             # If volumes are not shared with any other container, assigning
-            # an alias in "volumes" is possible, but not neccessary:
+            # an alias in "volumes" is possible, but not necessary:
             'binds': {'/etc/nginx': ('config/nginx', 'ro')},
             'uses': 'app_server_socket',
             'attaches': 'web_log',
@@ -628,4 +716,3 @@ Furthermore, on calling::
 Both commands can be combined by simply running::
 
     map_client.startup('web_server')
-
